@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Deliberately broken process: every rule R1..R6 fires at least once. -->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+                  id="Definitions_Risky" targetNamespace="http://example.com/bpmn">
+
+  <bpmn:process id="RiskyOrder" name="Risky Order" isExecutable="true">
+
+    <bpmn:startEvent id="Start"><bpmn:outgoing>f1</bpmn:outgoing></bpmn:startEvent>
+
+    <!-- R4: XOR split converging into an AND join -->
+    <bpmn:serviceTask id="Validate" name="Validate order" camunda:delegateExpression="${validate}"/>
+    <bpmn:exclusiveGateway id="FraudCheck" name="Fraud?" default="f3"/>
+    <bpmn:serviceTask id="ManualReview" name="Manual review" camunda:expression="${review.run()}"/>
+    <bpmn:serviceTask id="AutoApprove" name="Auto approve" camunda:expression="${approve.run()}"/>
+    <bpmn:parallelGateway id="JoinApproval" name="Join"/>
+
+    <!-- R3: synchronous retry loop with no wait state -->
+    <bpmn:serviceTask id="CallPricing" name="Call pricing API" camunda:delegateExpression="${pricing}"/>
+    <bpmn:exclusiveGateway id="PricingOk" name="Pricing ok?" default="f8"/>
+
+    <!-- R6: five synchronous compute tasks in a row -->
+    <bpmn:serviceTask id="Enrich1" name="Enrich customer" camunda:expression="${e1}"/>
+    <bpmn:scriptTask id="Enrich2" name="Compute tax" scriptFormat="groovy">
+      <bpmn:script>execution.setVariableLocal("tax", 1)</bpmn:script>
+    </bpmn:scriptTask>
+    <bpmn:businessRuleTask id="Enrich3" name="Discount rules" camunda:decisionRef="discount"/>
+    <bpmn:serviceTask id="Enrich4" name="Reserve stock" camunda:expression="${e4}"/>
+    <bpmn:serviceTask id="Enrich5" name="Persist order" camunda:expression="${e5}"/>
+
+    <!-- R5: parallel multi-instance without asyncBefore -->
+    <bpmn:serviceTask id="NotifyPartners" name="Notify partners" camunda:expression="${notify}">
+      <bpmn:multiInstanceLoopCharacteristics camunda:collection="partners" camunda:elementVariable="partner"/>
+    </bpmn:serviceTask>
+
+    <!-- R7: event-based gateway leading to a serviceTask -->
+    <bpmn:eventBasedGateway id="WaitForSignal" name="Wait"/>
+    <bpmn:intermediateCatchEvent id="Timeout" name="1h">
+      <bpmn:timerEventDefinition><bpmn:timeDuration>PT1H</bpmn:timeDuration></bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:serviceTask id="Poll" name="Poll status" camunda:expression="${poll}"/>
+
+    <!-- R1 + R2: sequential MI sub-process writing a global variable, with a flow escaping its scope -->
+    <bpmn:subProcess id="PerItem" name="Per line item">
+      <bpmn:multiInstanceLoopCharacteristics isSequential="true" camunda:collection="items" camunda:elementVariable="item"/>
+      <bpmn:startEvent id="ItemStart"/>
+      <bpmn:scriptTask id="SumItem" name="Accumulate total" scriptFormat="groovy" camunda:resultVariable="runningTotal">
+        <bpmn:script>return (execution.getVariable("runningTotal") ?: 0) + item.price</bpmn:script>
+      </bpmn:scriptTask>
+      <bpmn:endEvent id="ItemEnd"/>
+      <bpmn:sequenceFlow id="i1" sourceRef="ItemStart" targetRef="SumItem"/>
+      <bpmn:sequenceFlow id="i2" sourceRef="SumItem" targetRef="ItemEnd"/>
+    </bpmn:subProcess>
+
+    <bpmn:endEvent id="End"/>
+
+    <bpmn:sequenceFlow id="f1"  sourceRef="Start"        targetRef="Validate"/>
+    <bpmn:sequenceFlow id="f2"  sourceRef="Validate"     targetRef="FraudCheck"/>
+    <bpmn:sequenceFlow id="f3"  sourceRef="FraudCheck"   targetRef="AutoApprove"/>
+    <bpmn:sequenceFlow id="f4"  sourceRef="FraudCheck"   targetRef="ManualReview">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression"
+                                xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">${fraudScore &gt; 80}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="f5"  sourceRef="ManualReview" targetRef="JoinApproval"/>
+    <bpmn:sequenceFlow id="f6"  sourceRef="AutoApprove"  targetRef="JoinApproval"/>
+    <bpmn:sequenceFlow id="f7"  sourceRef="JoinApproval" targetRef="CallPricing"/>
+    <bpmn:sequenceFlow id="f7b" sourceRef="CallPricing"  targetRef="PricingOk"/>
+    <bpmn:sequenceFlow id="f8"  sourceRef="PricingOk"    targetRef="Enrich1"/>
+    <bpmn:sequenceFlow id="f9"  sourceRef="PricingOk"    targetRef="CallPricing">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression"
+                                xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">${!pricingOk}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="f10" sourceRef="Enrich1" targetRef="Enrich2"/>
+    <bpmn:sequenceFlow id="f11" sourceRef="Enrich2" targetRef="Enrich3"/>
+    <bpmn:sequenceFlow id="f12" sourceRef="Enrich3" targetRef="Enrich4"/>
+    <bpmn:sequenceFlow id="f13" sourceRef="Enrich4" targetRef="Enrich5"/>
+    <bpmn:sequenceFlow id="f14" sourceRef="Enrich5" targetRef="NotifyPartners"/>
+    <bpmn:sequenceFlow id="f15" sourceRef="NotifyPartners" targetRef="WaitForSignal"/>
+    <bpmn:sequenceFlow id="f18" sourceRef="WaitForSignal" targetRef="Timeout"/>
+    <bpmn:sequenceFlow id="f19" sourceRef="WaitForSignal" targetRef="Poll"/>
+    <bpmn:sequenceFlow id="f20" sourceRef="Timeout" targetRef="PerItem"/>
+    <bpmn:sequenceFlow id="f21" sourceRef="Poll" targetRef="PerItem"/>
+    <bpmn:sequenceFlow id="f16" sourceRef="PerItem" targetRef="End"/>
+    <!-- R2: escapes the sub-process scope -->
+    <bpmn:sequenceFlow id="f17" sourceRef="SumItem" targetRef="End"/>
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="Diagram_1">
+    <bpmndi:BPMNPlane id="Plane_1" bpmnElement="RiskyOrder">
+      <bpmndi:BPMNShape id="Start_di" bpmnElement="Start"><dc:Bounds x="100" y="182" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Validate_di" bpmnElement="Validate"><dc:Bounds x="180" y="160" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="FraudCheck_di" bpmnElement="FraudCheck"><dc:Bounds x="320" y="175" width="50" height="50"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ManualReview_di" bpmnElement="ManualReview"><dc:Bounds x="410" y="60" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="AutoApprove_di" bpmnElement="AutoApprove"><dc:Bounds x="410" y="260" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="JoinApproval_di" bpmnElement="JoinApproval"><dc:Bounds x="550" y="175" width="50" height="50"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CallPricing_di" bpmnElement="CallPricing"><dc:Bounds x="640" y="160" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="PricingOk_di" bpmnElement="PricingOk"><dc:Bounds x="780" y="175" width="50" height="50"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Enrich1_di" bpmnElement="Enrich1"><dc:Bounds x="870" y="160" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Enrich2_di" bpmnElement="Enrich2"><dc:Bounds x="1000" y="160" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Enrich3_di" bpmnElement="Enrich3"><dc:Bounds x="1130" y="160" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Enrich4_di" bpmnElement="Enrich4"><dc:Bounds x="1260" y="160" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Enrich5_di" bpmnElement="Enrich5"><dc:Bounds x="1390" y="160" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="NotifyPartners_di" bpmnElement="NotifyPartners"><dc:Bounds x="1520" y="160" width="100" height="80"/></bpmndi:BPMNShape>
+            <bpmndi:BPMNShape id="WaitForSignal_di" bpmnElement="WaitForSignal"><dc:Bounds x="1660" y="175" width="50" height="50"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Timeout_di" bpmnElement="Timeout"><dc:Bounds x="1760" y="92" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Poll_di" bpmnElement="Poll"><dc:Bounds x="1730" y="260" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="f1_di" bpmnElement="f1"><di:waypoint x="136" y="200"/><di:waypoint x="180" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f2_di" bpmnElement="f2"><di:waypoint x="280" y="200"/><di:waypoint x="320" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f3_di" bpmnElement="f3"><di:waypoint x="345" y="225"/><di:waypoint x="345" y="300"/><di:waypoint x="410" y="300"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f4_di" bpmnElement="f4"><di:waypoint x="345" y="175"/><di:waypoint x="345" y="100"/><di:waypoint x="410" y="100"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f5_di" bpmnElement="f5"><di:waypoint x="510" y="100"/><di:waypoint x="575" y="100"/><di:waypoint x="575" y="175"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f6_di" bpmnElement="f6"><di:waypoint x="510" y="300"/><di:waypoint x="575" y="300"/><di:waypoint x="575" y="225"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f7_di" bpmnElement="f7"><di:waypoint x="600" y="200"/><di:waypoint x="640" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f7b_di" bpmnElement="f7b"><di:waypoint x="740" y="200"/><di:waypoint x="780" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f8_di" bpmnElement="f8"><di:waypoint x="830" y="200"/><di:waypoint x="870" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f9_di" bpmnElement="f9"><di:waypoint x="805" y="225"/><di:waypoint x="805" y="290"/><di:waypoint x="690" y="290"/><di:waypoint x="690" y="240"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f10_di" bpmnElement="f10"><di:waypoint x="970" y="200"/><di:waypoint x="1000" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f11_di" bpmnElement="f11"><di:waypoint x="1100" y="200"/><di:waypoint x="1130" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f12_di" bpmnElement="f12"><di:waypoint x="1230" y="200"/><di:waypoint x="1260" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f13_di" bpmnElement="f13"><di:waypoint x="1360" y="200"/><di:waypoint x="1390" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f14_di" bpmnElement="f14"><di:waypoint x="1490" y="200"/><di:waypoint x="1520" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f15_di" bpmnElement="f15"><di:waypoint x="1620" y="200"/><di:waypoint x="1660" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f18_di" bpmnElement="f18"><di:waypoint x="1685" y="175"/><di:waypoint x="1685" y="110"/><di:waypoint x="1760" y="110"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f19_di" bpmnElement="f19"><di:waypoint x="1685" y="225"/><di:waypoint x="1685" y="300"/><di:waypoint x="1730" y="300"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f20_di" bpmnElement="f20"><di:waypoint x="1796" y="110"/><di:waypoint x="1880" y="110"/><di:waypoint x="1880" y="130"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f21_di" bpmnElement="f21"><di:waypoint x="1830" y="300"/><di:waypoint x="1880" y="300"/><di:waypoint x="1880" y="300"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="i1_di" bpmnElement="i1"><di:waypoint x="1986" y="200"/><di:waypoint x="2030" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="i2_di" bpmnElement="i2"><di:waypoint x="2130" y="200"/><di:waypoint x="2180" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="f16_di" bpmnElement="f16"><di:waypoint x="2260" y="200"/><di:waypoint x="2310" y="200"/></bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="PerItem_di" bpmnElement="PerItem" isExpanded="true"><dc:Bounds x="1920" y="100" width="340" height="200"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ItemStart_di" bpmnElement="ItemStart"><dc:Bounds x="1950" y="182" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="SumItem_di" bpmnElement="SumItem"><dc:Bounds x="2030" y="160" width="100" height="80"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ItemEnd_di" bpmnElement="ItemEnd"><dc:Bounds x="2180" y="182" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_di" bpmnElement="End"><dc:Bounds x="2310" y="182" width="36" height="36"/></bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="f17_di" bpmnElement="f17">
+        <di:waypoint x="2080" y="240"/><di:waypoint x="2080" y="360"/><di:waypoint x="2328" y="360"/><di:waypoint x="2328" y="218"/>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
